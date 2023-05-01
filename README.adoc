@@ -112,10 +112,28 @@ spec:
 .KEDA ScaleObject to quarkus-rabbitmq-basic-consumer resource
 [source,yaml]
 ----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rbtmq-conn-secret
+data:
+  host: YW1xcDovL2d1ZXN0Omd1ZXN0QGlwT3JzZXJ2aWNlOjU2NzI=
+---
 apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: rbtmq-trigger-auth-conn
+  namespace: default
+spec:
+  secretTargetRef:
+    - parameter: host
+      name: rbtmq-conn-secret
+      key: host
+---
+apiVersion: keda.sh/v1alhpa1
 kind: ScaledObject
 metadata:
-  name: rabbitmq-scaleobject
+  name: rabbitmq-scaledobject
   namespace: default
 spec:
   scaleTargetRef:
@@ -130,7 +148,8 @@ spec:
         queueName: queue001
         mode: QueueLength
         value: "5"
-        host: amqp://guest:guest@ipOrservice:5672 # only test effect
+      authenticationRef:
+        name: rbtmq-trigger-auth-conn
 ----
 
 [source,bash]
@@ -168,6 +187,161 @@ spec:
       start: 10 6 * * *
       end: 12 6 * * *
       desiredReplicas: "5"
-
-
 ----
+
+.Complete Deployment
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rbtmq-conn-secret
+data:
+  secret-key-name: YW1xcDovL2d1ZXN0Omd1ZXN0QGlwT3JzZXJ2aWNlOjU2NzI=
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quarkus-rabbitmq-basic-consumer
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: quarkus-rabbitmq-basic-consumer
+  template:
+    metadata:
+      labels:
+        app: quarkus-rabbitmq-basic-consumer
+    spec:
+      containers:
+        - name: quarkus-rabbitmq-basic-consumer
+          image: douglasdb/quarkus-rabbitmq-basic-consumer
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef:
+                name: rbtmq-conn-secret
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: rbtmq-scaledobject
+  namespace: default
+spec:
+  scaleTargetRef:
+    name: quarkus-rabbitmq-basic-consumer
+  pollingInterval: 5
+  cooldownPeriod: 120
+  maxReplicaCount: 20
+  triggers:
+    - type: rabbitmq
+      metadata:
+        protocol: amqp
+        queueName: queue001
+        mode: QueueLength
+        value: "5"
+        host: rbtmq-conn-secret
+        name: rbtmq-trigger-auth-conn
+----
+
+. ClusterTriggerAuthentication is a global object, this can be used from any namespace.
+To set a trigger to use a ClusterTriggerAuthentication, add a kind field to the authentication reference, we can use Hashicorp Vault auth also
+
+.ClusterTriggerAuthentication sample
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rbtmq-conn-secret
+data:
+  secret-key-name: YW1xcDovL2d1ZXN0Omd1ZXN0QGlwT3JzZXJ2aWNlOjU2NzI=
+---
+apiVersion: keda.sh/v1alpha1
+kind: ClusterTriggerAuthentication
+metadata:
+  name: rbtmq-cluster-trigger-auth-conn
+spec:
+  secretTargetRef:
+    - parameter: host
+      name: rbtmq-conn-secret
+      key: host
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: rbtmq-scaledobject
+  namespace: default
+spec:
+  scaleTargetRef:
+    name: quarkus-rabbitmq-basic-consumer
+  pollingInterval: 5
+  cooldownPeriod: 120
+  maxReplicaCount: 20
+  triggers:
+    - type: rabbitmq
+      metadata:
+        protocol: amqp
+        queueName: queue001
+        mode: QueueLength
+        value: "5"
+      authenticatorRef:
+        name: rbtmq-cluster-trigger-auth-conn
+        kind: ClusterTriggerAuthentication
+----
+
+.ScaledJob Based on Sample
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rabbitmq-config
+data:
+  rabbitmq_host: "hostipaddress"
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: rabbitmq-sj-consumer
+  namespace: default
+spec:
+  jobTargetRef:
+    template:
+      spec:
+        containers:
+        - name: rabbitmq-client
+          image: douglasdb/quarkus-rabbitmq-basic-consumer
+          imagePullPolicy: Always
+          env:
+          - name: RABBITMQ_HOST
+            valueFrom:
+             configMapKeyRef:
+              name: rabbitmq-config
+              key: rabbitmq_host
+        restartPolicy: Never
+    backoffLimit: 4
+    completions: 1
+  pollingInterval: 10             # Optional. Default: 30 seconds
+  maxReplicaCount: 20             # Optional. Default: 100
+  successfulJobsHistoryLimit: 0   # Optional. Default: 100. How many completed jobs should be kept.
+  failedJobsHistoryLimit: 0       # Optional. Default: 100. How many failed jobs should be kept.
+  triggers:
+  - type: rabbitmq
+    metadata:
+      queueName: queue001
+      includeUnacked: "true"
+      protocol: http
+      host: "different_k8s_host_rabbit_here"
+      queueLength  : '1'
+----
+
+== KEDA Scalers
+
+Main list
+
+* Azure Service Bus
+* Apache Kafka
+* MySql
+* Postgres
+* ActiveMQ
+* Google PubSub
